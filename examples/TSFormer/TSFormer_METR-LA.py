@@ -6,9 +6,9 @@ sys.path.append(os.path.abspath(__file__ + "/../../.."))
 from easydict import EasyDict
 from basicts.losses import masked_mae
 
-from .step_arch import TSFormer
-from .step_runner import TSFormerRunner
-from .step_data import PretrainingDataset
+from basicts.archs import TSFormer
+from basicts.runners import TSFormerRunner
+from basicts.data import TimeSeriesForecastingDataset
 
 
 CFG = EasyDict()
@@ -16,7 +16,7 @@ CFG = EasyDict()
 # ================= general ================= #
 CFG.DESCRIPTION = "TSFormer(METR-LA) configuration"
 CFG.RUNNER = TSFormerRunner
-CFG.DATASET_CLS = PretrainingDataset
+CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "METR-LA"
 CFG.DATASET_TYPE = "Traffic speed"
 CFG.DATASET_INPUT_LEN = 288 * 7
@@ -33,9 +33,12 @@ CFG.ENV.CUDNN.ENABLED = True
 CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = "TSFormer"
 CFG.MODEL.ARCH = TSFormer
+CFG.MODEL.FROWARD_FEATURES = [0]
+CFG.MODEL.TARGET_FEATURES = [0]
+
 CFG.MODEL.PARAM = {
     "patch_size":12,
-    "in_channel":1,
+    "in_channel":len(CFG["MODEL"]["FROWARD_FEATURES"]),
     "embed_dim":96,
     "num_heads":4,
     "mlp_ratio":4,
@@ -46,8 +49,6 @@ CFG.MODEL.PARAM = {
     "decoder_depth":1,
     "mode":"pre-train"
 }
-CFG.MODEL.FROWARD_FEATURES = [0]
-CFG.MODEL.TARGET_FEATURES = [0]
 
 # ================= optim ================= #
 CFG.TRAIN = EasyDict()

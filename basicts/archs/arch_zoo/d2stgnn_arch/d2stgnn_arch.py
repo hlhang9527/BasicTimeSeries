@@ -172,6 +172,7 @@ class D2STGNN(nn.Module):
         spa_forecast_hidden = sum(spa_forecast_hidden_list)
         tem_forecast_hidden = sum(tem_forecast_hidden_list)
         forecast_hidden = spa_forecast_hidden + tem_forecast_hidden
+        forecast_hidden = self.out_fc_1(F.relu(forecast_hidden))
 
         return forecast_hidden.transpose(1, 2)
 
@@ -179,7 +180,7 @@ class D2STGNN(nn.Module):
         forecast_hidden = self.encoding(history_data=history_data)
         # regression layer
         forecast = self.out_fc_2(
-            F.relu(self.out_fc_1(F.relu(forecast_hidden))))
+            F.relu(forecast_hidden))
         forecast = forecast.contiguous().view(
             forecast.shape[0], forecast.shape[1], -1)
 

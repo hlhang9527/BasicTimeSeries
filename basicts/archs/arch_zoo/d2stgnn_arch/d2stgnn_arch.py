@@ -142,12 +142,12 @@ class D2STGNN(nn.Module):
 
         Args:
             history_data (Tensor): Input data with shape: [B, L, N, C]
-            
+
         Returns:
             torch.Tensor: outputs with shape [B, L, N, C]
         """
 
-        X = history_data
+        X = history_data # 16, 12, 307, 3
         # ==================== Prepare Input Data ==================== #
         X, E_u, E_d, T_D, D_W = self._prepare_inputs(X)
 
@@ -180,5 +180,5 @@ class D2STGNN(nn.Module):
             forecast.shape[0], forecast.shape[2], -1)
 
         # reshape
-        forecast = forecast.transpose(1, 2).unsqueeze(-1)
+        forecast = forecast.transpose(1, 2).unsqueeze(-1) # B, L, N, 1
         return forecast

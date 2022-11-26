@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Dict
 
@@ -25,7 +26,14 @@ class BaseRunner(Runner):
         """
 
         super().__init__(cfg)
-
+        # rewrite ckpt_dir
+        self.ckpt_save_dir = os.path.join(cfg['TRAIN']['CKPT_SAVE_DIR'], "{}_{}_{}_{}".format(
+                                                                          cfg["DATASET_NAME"],
+                                                                          cfg["DATASET_INPUT_LEN"],
+                                                                          cfg["DATASET_OUTPUT_LEN"],
+                                                                          cfg['MD5']))
+        if not os.path.exists(self.ckpt_save_dir):
+            os.mkdir(self.ckpt_save_dir)
         # validate every `val_interval` epoch
         self.val_interval = cfg["VAL"].get("INTERVAL", 1)
         # test every `test_interval` epoch

@@ -1,3 +1,4 @@
+from curses import noecho
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -10,7 +11,10 @@ class nconv(nn.Module):
         super(nconv, self).__init__()
 
     def forward(self, x, A):
-        x = torch.einsum('ncvl,vw->ncwl', (x, A))
+        if len(A.shape) == 3:
+            x = torch.einsum('ncvl,nvw->ncwl',(x,A))
+        else:
+            x = torch.einsum('ncvl,vw->ncwl',(x,A))
         return x.contiguous()
 
 
@@ -151,7 +155,18 @@ class GraphWaveNet(nn.Module):
 
         self.receptive_field = receptive_field
 
-    def encoding(self, history_data: torch.Tensor) -> torch.Tensor:
+    def _calculate_random_walk_matrix(self, adj_mx):
+        B, N, N = adj_mx.shape
+
+        adj_mx = adj_mx + torch.eye(int(adj_mx.shape[1])).unsqueeze(0).expand(B, N, N).to(adj_mx.device)
+        d = torch.sum(adj_mx, 2)
+        d_inv = 1. / d
+        d_inv = torch.where(torch.isinf(d_inv), torch.zeros(d_inv.shape).to(adj_mx.device), d_inv)
+        d_mat_inv = torch.diag_embed(d_inv)
+        random_walk_mx = torch.bmm(d_mat_inv, adj_mx)
+        return random_walk_mx
+
+    def encoding(self, history_data: torch.Tensor, sampled_adj=None) -> torch.Tensor:
         """Feedforward function of Graph WaveNet.
 
         Args:
@@ -170,6 +185,14 @@ class GraphWaveNet(nn.Module):
             x = input
         x = self.start_conv(x)
         skip = 0
+
+        #
+        if sampled_adj is not None:
+            # ====== if use learned adjacency matrix, then reset the self.supports ===== #
+            self.supports = [] + [self._calculate_random_walk_matrix(sampled_adj)]
+            self.supports = self.supports + [self._calculate_random_walk_matrix(sampled_adj.transpose(-1, -2))]
+        else:
+            pass
 
         # calculate the current adaptive adj matrix once per iteration
         new_supports = None
@@ -224,9 +247,13 @@ class GraphWaveNet(nn.Module):
             x = self.bn[i](x)
         return skip
 
-    def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs):
-        skip = self.encoding(history_data=history_data)
-        x = F.relu(skip)
-        x = F.relu(self.end_conv_1(x))
-        x = self.end_conv_2(x) # B, L, N, C
+    def output_layer(self, skip):
+        skip = F.relu(skip)
+        skip = F.relu(self.end_conv_1(skip))
+        x = self.end_conv_2(skip) # B, L, N, C
         return x, skip.contiguous().view(skip.shape[0], skip.shape[2], -1)
+
+    def forward(self, history_data: torch.Tensor, future_data=None, batch_seen=None, epoch=None, train=None, sampled_adj=None, **kwargs):
+        skip = self.encoding(history_data=history_data, sampled_adj=sampled_adj)
+        x, last_hidden = self.output_layer(skip=skip)
+        return x, last_hidden

@@ -21,12 +21,10 @@ def gumbel_softmax_sample(logits, temperature, eps=1e-10):
 
 def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     """Sample from the Gumbel-Softmax distribution and optionally discretize.
-
     Args:
         logits: [batch_size, n_class] unnormalized log-probs
         temperature: non-negative scalar
         hard: if True, take argmax, but differentiate w.r.t. soft sample y
-
     Returns:
         [batch_size, n_class] sample from the Gumbel-Softmax distribution.
         If hard=True, then the returned sample will be one-hot, otherwise it will
@@ -50,7 +48,7 @@ class DiscreteGraphLearning(nn.Module):
 
     def __init__(self, dataset_name, k, input_seq_len, output_seq_len):
         super().__init__()
-        
+
         self.k = k          # the "k" of knn graph
         self.num_nodes = {"METR-LA": 207, "PEMS04": 307, "PEMS-BAY": 325}[dataset_name]
         self.train_length = {"METR-LA": 23990, "PEMS04": 13599, "PEMS-BAY": 36482}[dataset_name]
@@ -58,7 +56,7 @@ class DiscreteGraphLearning(nn.Module):
 
         # CNN for global feature extraction
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
-        self.dim_fc = {"METR-LA": 383552, "PEMS04": 217296, "PEMS-BAY": 217296}[dataset_name]
+        self.dim_fc = {"METR-LA": 383552, "PEMS04": 217296, "PEMS-BAY": 583424}[dataset_name]
         self.embedding_dim = 100
         ## network structure
         self.conv1 = torch.nn.Conv1d(1, 8, 10, stride=1)  # .to(device)
@@ -71,8 +69,6 @@ class DiscreteGraphLearning(nn.Module):
         # FC for transforming the features from TSFormer
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
         self.dim_fc_mean = {"METR-LA": 16128, "PEMS04": 16128 * 2, "PEMS-BAY": 16128}[dataset_name]
-        self.fc_out = nn.Linear((self.embedding_dim) * 2, self.embedding_dim)
-        self.fc_cat = nn.Linear(self.embedding_dim, 2)
         self.fc_mean = nn.Linear(self.dim_fc_mean, 100)
 
         # discrete graph learning
@@ -112,14 +108,13 @@ class DiscreteGraphLearning(nn.Module):
         adj.requires_grad = False
         return adj
 
-    def forward(self, long_term_history, tsformer):
+    def forward(self, long_term_history, hidden_states):
         """Learning discrete graph structure based on TSFormer.
-
         Args:
             long_term_history (torch.Tensor): very long-term historical MTS with shape [B, P * L, N, C], which is used in the TSFormer.
                                                 P is the number of segments (patches), and L is the length of segments (patches).
-            tsformer (nn.Module): the pre-trained TSFormer.
-
+            # tsformer (nn.Module): the pre-trained TSFormer.
+            hidden_states: B, N, D, the hidden states from model for each node.
         Returns:
             torch.Tensor: Bernoulli parameter (unnormalized) of each edge of the learned dependency graph. Shape: [B, N * N, 2].
             torch.Tensor: the output of TSFormer with shape [B, N, P, d].
@@ -138,8 +133,10 @@ class DiscreteGraphLearning(nn.Module):
         global_feat = global_feat.unsqueeze(0).expand(batch_size, num_nodes, -1)                     # Gi in Eq. (2)
 
         # generate dynamic feature based on TSFormer
-        hidden_states = tsformer(long_term_history[..., [0]])
-        dynamic_feat = F.relu(self.fc_mean(hidden_states.reshape(batch_size, num_nodes, -1)))     # relu(FC(Hi)) in Eq. (2)
+        # hidden_states = tsformer(long_term_history[..., [0]])
+        # The dynamic feature has now been removed,
+        # as we found that it could lead to instability in the learning of the underlying graph structure.
+        # dynamic_feat = F.relu(self.fc_mean(hidden_states))     # relu(FC(Hi)) in Eq. (2)
 
         # time series feature
         node_feat = global_feat
@@ -161,8 +158,8 @@ class DiscreteGraphLearning(nn.Module):
         sampled_adj.masked_fill_(mask, 0)
 
         # prior graph based on TSFormer
-        adj_knn = self.get_k_nn_neighbor(hidden_states.reshape(batch_size, num_nodes, -1), k=self.k*self.num_nodes, metric="cosine")
+        adj_knn = self.get_k_nn_neighbor(hidden_states, k=self.k*self.num_nodes, metric="cosine")
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(adj_knn.device)
         adj_knn.masked_fill_(mask, 0)
 
-        return bernoulli_unnorm, hidden_states, adj_knn, sampled_adj
+        return bernoulli_unnorm, adj_knn, sampled_adj

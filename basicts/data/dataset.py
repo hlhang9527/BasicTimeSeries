@@ -9,7 +9,7 @@ from ..utils import load_pkl
 class TimeSeriesForecastingDataset(Dataset):
     """Time series forecasting dataset."""
 
-    def __init__(self, data_file_path: str, index_file_path: str, mode: str) -> None:
+    def __init__(self, data_file_path: str, index_file_path: str, mode: str, seq_len=0, debug=False, start_seq_len=0) -> None:
         super().__init__()
         assert mode in ["train", "valid", "test"], "error mode"
         self._check_if_file_exists(data_file_path, index_file_path)
@@ -19,6 +19,16 @@ class TimeSeriesForecastingDataset(Dataset):
         self.data = torch.from_numpy(processed_data).float()
         # read index
         self.index = load_pkl(index_file_path)[mode]
+        # for long history
+        self.seq_len = seq_len
+        self.start_seq_len = start_seq_len
+        if self.start_seq_len and mode == "train":
+            self.index=self.index[start_seq_len:]
+        if debug:
+            self.index = self.index[:100]
+        # mask
+        self.mask = torch.zeros(self.seq_len, self.data.shape[1], self.data.shape[2])
+
 
     def _check_if_file_exists(self, data_file_path: str, index_file_path: str):
         """Check if data file and index file exist.
@@ -61,7 +71,12 @@ class TimeSeriesForecastingDataset(Dataset):
             history_data = self.data[history_index]
             future_data = self.data[idx[1], idx[2]]
 
-        return future_data, history_data, idx
+        if idx[1] - self.seq_len < 0:
+            long_history_data = torch.cat([self.mask[:self.seq_len - idx[1]], self.data[:idx[1]]], dim=0)
+        else:
+            long_history_data = self.data[idx[1] - self.seq_len:idx[1]]     # 11
+
+        return future_data, history_data, idx, long_history_data
 
     def __len__(self):
         """Dataset length

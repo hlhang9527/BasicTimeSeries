@@ -21,6 +21,7 @@ from .runner_zoo.tsformer_runner import TSFormerRunner
 from .knn_model import KnnModel
 from .index_builder import IndexBuilder
 from .data_store import DataStore
+from .runner_zoo.step_runner import STEPRunner
 
 __all__ = ["BaseTimeSeriesForecastingRunner",
            "SimpleTimeSeriesForecastingRunner", "STIDRunner",
@@ -29,4 +30,4 @@ __all__ = ["BaseTimeSeriesForecastingRunner",
            "AGCRNRunner", "StemGNNRunner", "GTSRunner",
            "DGCRNRunner", "LinearRunner", "AutoformerRunner",
            "HIRunner", "FEDformerRunner", "InformerRunner",
-           "PyraformerRunner", "TSFormerRunner", "KnnModel", "IndexBuilder", "DataStore", "get_np_memmap"]
+           "PyraformerRunner", "TSFormerRunner", "KnnModel", "IndexBuilder", "DataStore", "get_np_memmap", "STEPRunner"]

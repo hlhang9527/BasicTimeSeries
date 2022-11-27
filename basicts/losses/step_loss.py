@@ -1,7 +1,6 @@
-import torch
 import numpy as np
 from torch import nn
-from basicts.losses import masked_mae
+from ..metrics import masked_mae
 
 def step_loss(prediction, real_value, theta, priori_adj, gsl_coefficient, null_val=np.nan):
     # graph structure learning loss

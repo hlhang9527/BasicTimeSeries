@@ -253,7 +253,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         else:
             forward_return[0] = prediction_rescaled
             forward_return[1] = real_value_rescaled
-        loss = self.metric_forward(self.loss, forward_return)
+        loss = self.metric_forward(self.loss, forward_return[:2])
         # metrics
         for metric_name, metric_func in self.metrics.items():
             metric_item = self.metric_forward(metric_func, forward_return[:2])

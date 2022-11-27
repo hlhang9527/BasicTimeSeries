@@ -151,7 +151,7 @@ class GraphWaveNet(nn.Module):
 
         self.receptive_field = receptive_field
 
-    def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs) -> torch.Tensor:
+    def encoding(self, history_data: torch.Tensor) -> torch.Tensor:
         """Feedforward function of Graph WaveNet.
 
         Args:
@@ -222,8 +222,11 @@ class GraphWaveNet(nn.Module):
             x = x + residual[:, :, :, -x.size(3):]
 
             x = self.bn[i](x)
+        return skip
 
+    def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs):
+        skip = self.encoding(history_data=history_data)
         x = F.relu(skip)
         x = F.relu(self.end_conv_1(x))
-        x = self.end_conv_2(x)
-        return x
+        x = self.end_conv_2(x) # B, L, N, C
+        return x, skip.contiguous().view(skip.shape[0], skip.shape[2], -1)

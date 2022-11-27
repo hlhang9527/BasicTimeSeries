@@ -18,6 +18,9 @@ from .runner_zoo.fedformer_runner import FEDformerRunner
 from .runner_zoo.informer_runner import InformerRunner
 from .runner_zoo.pyraformer_runner import PyraformerRunner
 from .runner_zoo.tsformer_runner import TSFormerRunner
+from .knn_model import KnnModel
+from .index_builder import IndexBuilder
+from .data_store import DataStore
 
 __all__ = ["BaseTimeSeriesForecastingRunner",
            "SimpleTimeSeriesForecastingRunner", "STIDRunner",
@@ -26,4 +29,4 @@ __all__ = ["BaseTimeSeriesForecastingRunner",
            "AGCRNRunner", "StemGNNRunner", "GTSRunner",
            "DGCRNRunner", "LinearRunner", "AutoformerRunner",
            "HIRunner", "FEDformerRunner", "InformerRunner",
-           "PyraformerRunner", "TSFormerRunner"]
+           "PyraformerRunner", "TSFormerRunner", "KnnModel", "IndexBuilder", "DataStore", "get_np_memmap"]

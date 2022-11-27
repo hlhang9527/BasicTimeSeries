@@ -1,16 +1,22 @@
 import math
 import functools
 from typing import Tuple, Union, Optional
-
+import os
+from webbrowser import get
+from tqdm import tqdm
 import torch
 import numpy as np
+import time
+import json
 from easytorch.utils.dist import master_only
 
 from .base_runner import BaseRunner
 from ..data import SCALER_REGISTRY
 from ..utils import load_pkl
 from ..metrics import masked_mae, masked_mape, masked_rmse
-
+from ..data import SCALER_REGISTRY
+from .knn_model import KnnModel
+from ..utils.data_store_utils import get_np_memmap, batch_cosine_similarity
 
 class BaseTimeSeriesForecastingRunner(BaseRunner):
     """
@@ -327,3 +333,227 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
         if train_epoch is not None:
             self.save_best_model(train_epoch, "val_MAE", greater_best=False)
+
+    @torch.no_grad()
+    @master_only
+    def create_data_store(self, cfg, output_dir="./data_store", subset="train"):
+        """Evaluate the model.
+
+        Args:
+            train_epoch (int, optional): current epoch if in training process.
+        """
+        if subset == "train":
+            cfg["TRAIN"]["DATA"]["SHUFFLE"] = False
+            data_loader = self.build_train_data_loader(cfg)
+        else:
+            data_loader = self.build_val_data_loader(cfg)
+        dstore_size = len(data_loader) * data_loader.batch_size * data_loader.dataset.data.size()[1]
+        start_time = time.time()
+        self.model.eval()
+
+
+        import os
+        if not os.path.exists(output_dir):
+            print("{} does not exist. Make It.".format(output_dir))
+            os.mkdir(output_dir)
+
+        pred_len = cfg["DATASET_INPUT_LEN"]
+        label_len = cfg["DATASET_OUTPUT_LEN"]
+        encoding_hidden_dim = 512 * 4 # TODO: this need to be unified
+        info = {
+            "pred_len": pred_len,
+            "label_len": label_len,
+            "encoding_hidden_dim": encoding_hidden_dim,
+            "dstore_size": dstore_size,
+            "node_num": data_loader.dataset.data.size()[1]
+        }
+        with open(os.path.join(output_dir, "info.json"), "w") as f:
+            json.dump(info, f)
+
+        predictions_np = get_np_memmap(output_dir, "{}_predictions.npy".format(subset), mode="w+", shape=(info["dstore_size"], info["pred_len"]))
+        real_values_np = get_np_memmap(output_dir, "{}_real_values.npy".format(subset), mode="w+", shape=(info["dstore_size"], info["label_len"]))
+        encoding_hiddens_np = get_np_memmap(output_dir, "{}_hiddens.npy".format(subset), mode="w+", shape=(info["dstore_size"], info["encoding_hidden_dim"]))
+        data_indices_np = get_np_memmap(output_dir, "{}_data_indices.npy".format(subset), mode="w+", shape=(info["dstore_size"]))
+        node_indices_np = get_np_memmap(output_dir, "{}_node_indices.npy".format(subset), mode="w+", shape=(info["dstore_size"]))
+
+        start = 0
+        for _, data in tqdm(enumerate(data_loader), desc="Creating Data Store from {}.".format(subset)):
+            forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
+            prediction = forward_return[0]
+            prediction = SCALER_REGISTRY.get(self.scaler["func"])(prediction, **self.scaler["args"])
+            prediction = prediction.squeeze(-1).permute(0, 2, 1)
+            real_value = forward_return[1]
+            real_value = SCALER_REGISTRY.get(self.scaler["func"])(real_value, **self.scaler["args"])
+            real_value = real_value.squeeze(-1).permute(0, 2, 1)
+
+            B, N, _= prediction.size()
+            assert len(forward_return) > 2, "forward_return must contains pred, real, hiddens"
+            encoding_hidden = forward_return[-1]
+            assert len(data) == 3, "future data, history data, idx"
+            data_indice = data[2][1].unsqueeze(-1)
+            data_indice = data_indice.expand(B, N).contiguous()
+            node_indice = torch.arange(N).unsqueeze(0).expand(B, N)
+
+            prediction = prediction.contiguous().view(-1, prediction.size()[-1])
+            real_value = real_value.contiguous().view(-1, real_value.size()[-1])
+            encoding_hidden = encoding_hidden.view(-1, encoding_hidden.size()[-1])
+            data_indice = data_indice.contiguous().view(-1)
+            node_indice = node_indice.contiguous().view(-1)
+
+            end = start+B*N
+            predictions_np[start:end, :] = prediction.cpu().detach().numpy()
+            real_values_np[start:end, :] = real_value.cpu().detach().numpy()
+            encoding_hiddens_np[start:end, :] = encoding_hidden.cpu().detach().numpy()
+            data_indices_np[start:end] = data_indice.cpu().detach().numpy()
+            node_indices_np[start:end] = node_indice.cpu().detach().numpy()
+
+            start = end
+        end_time = time.time()
+        print("Total inference time: {} minutes.".format((end_time - start_time) / 60))
+        # test read np memmap
+
+    @torch.no_grad()
+    @master_only
+    def test_knn_process(self, cfg, dstore_dir, used_hidden="hiddens", k=100, metric="l2", knn_weight=0.5, train_epoch: int = None):
+        """The whole test process.
+
+        Args:
+            cfg (dict, optional): config
+            train_epoch (int, optional): current epoch if in training process.
+        """
+
+        # init test if not in training process
+        if train_epoch is None:
+            self.init_test(cfg)
+
+        self.on_test_start()
+
+        test_start_time = time.time()
+        self.model.eval()
+
+        # test
+        self.test_knn(cfg=cfg, dstore_dir=dstore_dir, used_hidden=used_hidden, k=k, metric=metric, knn_weight=knn_weight)
+
+        test_end_time = time.time()
+        self.update_epoch_meter("test_time", test_end_time - test_start_time)
+        # print test meters
+        self.print_epoch_meters("test")
+        if train_epoch is not None:
+            # tensorboard plt meters
+            self.plt_epoch_meters("test", train_epoch // self.test_interval)
+
+        self.on_test_end()
+
+
+    @torch.no_grad()
+    @master_only
+    def test_knn(self, cfg, dstore_dir, used_hidden="hiddens", k=100, metric="l2", knn_weight=1, t=0.1):
+        """Evaluate the model.
+
+        Args:
+            train_epoch (int, optional): current epoch if in training process.
+        """
+        knn_model = KnnModel(dstore_dir=dstore_dir, used_hidden=used_hidden, k=k, metric=metric)
+        # test loop
+        predictions = []
+        real_values = []
+        data_loader = self.test_data_loader
+        # data_loader =  self.build_train_data_loader(cfg)
+        knn_better_stds = []
+        model_better_stds = []
+
+        prediction_worses = []
+        prediction_better = []
+        prediction_knn_better = []
+        prediction_worses_labels = []
+        prediction_better_labels = []
+
+
+        for _, data in tqdm(enumerate(data_loader), desc="Testing"):
+            forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
+            prediction = forward_return[0]
+            prediction = SCALER_REGISTRY.get(self.scaler["func"])(prediction, **self.scaler["args"])
+            prediction = prediction.squeeze(-1).permute(0, 2, 1)
+            prediction = prediction.cpu()
+            real_value = forward_return[1]
+            real_value = SCALER_REGISTRY.get(self.scaler["func"])(real_value, **self.scaler["args"])
+            real_value = real_value.squeeze(-1).permute(0, 2, 1)
+            real_value = real_value.cpu()
+
+            B, N, _= prediction.size()
+            hiddens = forward_return[-1]
+            data_indice = data[2][1].unsqueeze(-1)
+            data_indice = data_indice.expand(B, N).contiguous()
+            node_indice = torch.arange(N).unsqueeze(0).expand(B, N)
+
+            queries = hiddens
+            hiddens_sim = batch_cosine_similarity(hiddens, hiddens) # B, N, N
+            topk, topk_indices = torch.topk(hiddens_sim, k=5, dim=-1) # B, N, k
+
+            queries = queries.contiguous().view(B*N, -1)
+            knn_vals, dists, knns, probs = knn_model.get_knn_prob(queries=queries, k=k, t=t)
+            knn_vals = knn_vals.contiguous().view(B, N, knn_vals.size()[1], -1).to(prediction.device)
+
+            knn_nodes = torch.from_numpy(knn_model.nodes[knns]).view(B, N, k) #B, N, topk
+            knn_indices = torch.from_numpy(knn_model.data_indices[knns]).view(B, N, k)
+
+            probs = probs.to(prediction.device)
+            probs = probs.contiguous().view(B, N, probs.size()[-1])
+            knn_vals_sum = knn_vals * probs.unsqueeze(-1)
+            knn_vals_sum = torch.sum(knn_vals_sum, dim=2)
+            prediction_knn = knn_vals_sum * knn_weight + prediction * (1 - knn_weight)
+
+            # prediction_knn = knn_vals_sum
+
+            # TODO for plot, this should be remove!!!
+            if self.metrics["MAE"](prediction_knn[:, :, 2], real_value[:, :, 2], self.null_val) < self.metrics["MAE"](prediction[:, :, 2], real_value[:, :, 2], self.null_val) - 0.1: #and \
+            #    self.metrics["MAE"](prediction_knn[:, :, 5], real_value[:, :, 5], self.null_val) < self.metrics["MAE"](prediction[:, :, 5], real_value[:, :, 5], self.null_val) - 0.1 and \
+            #    self.metrics["MAE"](prediction_knn[:, :, 8], real_value[:, :, 8], self.null_val) < self.metrics["MAE"](prediction[:, :, 8], real_value[:, :, 8], self.null_val) - 0.2 and \
+            #    self.metrics["MAE"](prediction_knn[:, :, 11], real_value[:, :, 11], self.null_val) < self.metrics["MAE"](prediction[:, :, 11], real_value[:, :, 11], self.null_val) - 0.2:
+
+                print("knn mae: {}, prediction mae: {}".format(self.metrics["MAE"](prediction_knn[:, :, 2], real_value[:, :, 2]),
+                                                               self.metrics["MAE"](prediction[:, :, 2], real_value[:, :, 2])))
+                # print("knn is better in this batch, batch size: {}".format(B))
+                # print("knn node: {}".format(knn_nodes[0, 0, :]))
+                # print("knn indices: {}".format(knn_indices[0, 0, :]))
+                print("data indices: {}".format(data[3]))
+                knn_better_stds.append(torch.std_mean(SCALER_REGISTRY.get(self.scaler["func"])(data[1], **self.scaler["args"])))
+                prediction_worses.append(prediction)
+                prediction_knn_better.append(prediction_knn)
+                prediction_worses_labels.append(real_value)
+            else:
+                model_better_stds.append(torch.std_mean(SCALER_REGISTRY.get(self.scaler["func"])(data[1], **self.scaler["args"])))
+                prediction_better.append(prediction)
+                prediction_better_labels.append(real_value)
+            # prediction = knn_vals_sum * knn_weight + (1 - knn_weight) * prediction
+
+            prediction = prediction_knn
+            predictions.append(prediction.permute(0, 2, 1).unsqueeze(-1))
+            real_values.append(real_value.permute(0, 2, 1).unsqueeze(-1))
+
+
+
+        predictions = torch.cat(predictions, dim=0)
+        real_values = torch.cat(real_values, dim=0)
+
+        # summarize the results.
+        # test performance of different horizon
+        for i in self.evaluation_horizons:
+            # For horizon i, only calculate the metrics **at that time** slice here.
+            pred = predictions[:, i, :, :]
+            real = real_values[:, i, :, :]
+            # metrics
+            metric_results = {}
+            for metric_name, metric_func in self.metrics.items():
+                metric_item = self.metric_forward(metric_func, [pred, real])
+                metric_results[metric_name] = metric_item.item()
+            log = "Evaluate best model on test data for horizon " + \
+                "{:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}"
+            log = log.format(
+                i+1, metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"])
+            self.logger.info(log)
+        # test performance overall
+        for metric_name, metric_func in self.metrics.items():
+            metric_item = self.metric_forward(metric_func, [predictions, real_values])
+            self.update_epoch_meter("test_"+metric_name, metric_item.item())
+            metric_results[metric_name] = metric_item.item()

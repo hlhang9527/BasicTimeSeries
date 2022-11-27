@@ -54,7 +54,7 @@ class SimpleTimeSeriesForecastingRunner(BaseTimeSeriesForecastingRunner):
         """
 
         # preprocess
-        future_data, history_data = data
+        future_data, history_data, idx = data
         history_data = self.to_running_device(history_data)      # B, L, N, C
         future_data = self.to_running_device(future_data)       # B, L, N, C
         batch_size, length, num_nodes, _ = future_data.shape
@@ -64,10 +64,10 @@ class SimpleTimeSeriesForecastingRunner(BaseTimeSeriesForecastingRunner):
 
         # curriculum learning
         if self.cl_param is None:
-            prediction_data = self.model(history_data=history_data, future_data=future_data_4_dec, batch_seen=iter_num, epoch=epoch, train=train)
+            prediction_data, encodding_hiddens = self.model(history_data=history_data, future_data=future_data_4_dec, batch_seen=iter_num, epoch=epoch, train=train)
         else:
             task_level = self.curriculum_learning(epoch)
-            prediction_data = self.model(history_data=history_data, future_data=future_data_4_dec, batch_seen=iter_num, epoch=epoch, train=train,\
+            prediction_data, encodding_hiddens = self.model(history_data=history_data, future_data=future_data_4_dec, batch_seen=iter_num, epoch=epoch, train=train,\
                                                                                                                      task_level=task_level)
         # feed forward
         assert list(prediction_data.shape)[:3] == [batch_size, length, num_nodes], \
@@ -75,4 +75,4 @@ class SimpleTimeSeriesForecastingRunner(BaseTimeSeriesForecastingRunner):
         # post process
         prediction = self.select_target_features(prediction_data)
         real_value = self.select_target_features(future_data)
-        return prediction, real_value
+        return prediction, real_value, encodding_hiddens

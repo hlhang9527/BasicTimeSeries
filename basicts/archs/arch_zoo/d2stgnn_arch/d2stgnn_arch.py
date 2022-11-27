@@ -172,18 +172,17 @@ class D2STGNN(nn.Module):
         spa_forecast_hidden = sum(spa_forecast_hidden_list)
         tem_forecast_hidden = sum(tem_forecast_hidden_list)
         forecast_hidden = spa_forecast_hidden + tem_forecast_hidden
-        forecast_hidden = self.out_fc_1(F.relu(forecast_hidden))
-
         return forecast_hidden.transpose(1, 2)
 
     def forward(self, history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, train: bool, **kwargs) -> torch.Tensor:
         forecast_hidden = self.encoding(history_data=history_data)
         # regression layer
-        forecast = self.out_fc_2(
-            F.relu(forecast_hidden))
+        forecast_hidden = self.out_fc_1(F.relu(forecast_hidden))
+        forecast_hidden = F.relu(forecast_hidden)
+        forecast = self.out_fc_2(forecast_hidden)
         forecast = forecast.contiguous().view(
             forecast.shape[0], forecast.shape[1], -1)
 
         # reshape
         forecast = forecast.transpose(1, 2).unsqueeze(-1) # B, L, N, 1
-        return forecast
+        return forecast, forecast_hidden.contiguous().view(forecast_hidden.shape[0], forecast_hidden.shape[1], -1)

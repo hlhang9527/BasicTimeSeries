@@ -1,11 +1,12 @@
 import torch
+from typing import Tuple, Union, Optional
 
 from easytorch.utils.dist import master_only
 from ...data.registry import SCALER_REGISTRY
 from ...runners import BaseTimeSeriesForecastingRunner
 
 
-class TSFormerRunner(BaseTimeSeriesForecastingRunner):
+class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         self.forward_features = cfg["MODEL"].get("FROWARD_FEATURES", None)
@@ -40,6 +41,22 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         data = data[:, :, :, self.target_features]
         return data
 
+    def train_iters(self, epoch: int, iter_index: int, data: Union[torch.Tensor, Tuple]) -> torch.Tensor:
+        """Training details.
+
+        Args:
+            data (Union[torch.Tensor, Tuple]): Data provided by DataLoader
+            epoch (int): current epoch.
+            iter_index (int): current iter.
+
+        Returns:
+            loss (torch.Tensor)
+        """
+
+        iter_num = (epoch-1) * self.iter_per_epoch + iter_index
+        forward_return = self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True)
+        return forward_return.loss
+
     def forward(self, data: tuple, epoch:int = None, iter_num: int = None, train:bool = True, **kwargs) -> tuple:
         """feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.
 
@@ -62,13 +79,9 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         history_data = self.select_input_features(history_data)
 
         # feed forward
-        reconstruction_masked_tokens, label_masked_tokens = self.model(history_data=history_data, future_data=None, batch_seen=iter_num, epoch=epoch)
-        # assert list(prediction_data.shape)[:3] == [batch_size, length, num_nodes], \
-            # "error shape of the output, edit the forward function to reshape it to [B, L, N, C]"
-        # post process
-        # prediction = self.select_target_features(prediction_data)
-        # real_value = self.select_target_features(future_data)
-        return reconstruction_masked_tokens, label_masked_tokens
+        tswav2vec_output = self.model(history_data=history_data, future_data=None, batch_seen=iter_num, epoch=epoch)
+
+        return tswav2vec_output
 
     @torch.no_grad()
     @master_only

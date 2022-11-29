@@ -6,22 +6,22 @@ sys.path.append(os.path.abspath(__file__ + "/../../.."))
 from easydict import EasyDict
 from basicts.losses import masked_mae
 
-from basicts.archs import TSFormer
-from basicts.runners import TSFormerRunner
+from basicts.archs import TSWav2Vec
+from basicts.runners import TsWav2VecRunner
 from basicts.data import TimeSeriesForecastingDataset
 
 
 CFG = EasyDict()
 
 # ================= general ================= #
-CFG.DESCRIPTION = "TSFormer(PEMS-BAY) configuration"
-CFG.RUNNER = TSFormerRunner
+CFG.DESCRIPTION = "TSFormer(PEMS04) configuration"
+CFG.RUNNER = TsWav2VecRunner
 CFG.DATASET_CLS = TimeSeriesForecastingDataset
-CFG.DATASET_NAME = "PEMS-BAY"
-CFG.DATASET_TYPE = "Traffic speed"
+CFG.DATASET_NAME = "PEMS04"
+CFG.DATASET_TYPE = "Traffic flow"
 CFG.DATASET_INPUT_LEN = 288 * 7
 CFG.DATASET_OUTPUT_LEN = 12
-CFG.GPU_NUM = 2
+CFG.GPU_NUM = 0
 
 # ================= environment ================= #
 CFG.ENV = EasyDict()
@@ -32,18 +32,8 @@ CFG.ENV.CUDNN.ENABLED = True
 # ================= model ================= #
 CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = "TSFormer"
-CFG.MODEL.ARCH = TSFormer
+CFG.MODEL.ARCH = TSWav2Vec
 CFG.MODEL.PARAM = {
-    "patch_size":12,
-    "in_channel":1,
-    "embed_dim":96,
-    "num_heads":4,
-    "mlp_ratio":4,
-    "dropout":0.1,
-    "num_token":288 * 7 / 12,
-    "mask_ratio":0.75,
-    "encoder_depth":4,
-    "decoder_depth":1,
     "mode":"pre-train"
 }
 CFG.MODEL.FROWARD_FEATURES = [0]
@@ -71,7 +61,7 @@ CFG.TRAIN.LR_SCHEDULER.PARAM= {
 CFG.TRAIN.CLIP_GRAD_PARAM = {
     "max_norm": 5.0
 }
-CFG.TRAIN.NUM_EPOCHS = 100
+CFG.TRAIN.NUM_EPOCHS = 200
 CFG.TRAIN.CKPT_SAVE_DIR = os.path.join(
     "checkpoints",
     "_".join([CFG.MODEL.NAME, str(CFG.TRAIN.NUM_EPOCHS)])
@@ -82,7 +72,7 @@ CFG.TRAIN.NULL_VAL = 0.0
 # read data
 CFG.TRAIN.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.TRAIN.DATA.BATCH_SIZE = 16
+CFG.TRAIN.DATA.BATCH_SIZE = 2
 CFG.TRAIN.DATA.PREFETCH = False
 CFG.TRAIN.DATA.SHUFFLE = True
 CFG.TRAIN.DATA.NUM_WORKERS = 2
@@ -96,7 +86,7 @@ CFG.VAL.DATA = EasyDict()
 # read data
 CFG.VAL.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.VAL.DATA.BATCH_SIZE = 16
+CFG.VAL.DATA.BATCH_SIZE = 8
 CFG.VAL.DATA.PREFETCH = False
 CFG.VAL.DATA.SHUFFLE = False
 CFG.VAL.DATA.NUM_WORKERS = 2
@@ -111,7 +101,7 @@ CFG.TEST.DATA = EasyDict()
 # read data
 CFG.TEST.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.TEST.DATA.BATCH_SIZE = 16
+CFG.TEST.DATA.BATCH_SIZE = 8
 CFG.TEST.DATA.PREFETCH = False
 CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 2

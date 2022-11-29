@@ -16,11 +16,12 @@ def parse_args():
     parser.add_argument("--task", default="knn_test", type=str)
     parser.add_argument("--dstore_dir", default="./data_store/D2STGNN", type=str)
     parser.add_argument("--topk", default=20, type=int)
+    parser.add_argument("--encoding_hidden_dim", default=512, type=int)
     return parser.parse_args()
 
 
 def main(cfg: dict, runner: Runner, ckpt: str = None, task="create_data_store", dstore_dir = "/data/research/time_series/STEP/data_store",
-        topk=10, used_hidden="hiddens"):
+        topk=10, encoding_hidden_dim=512, used_hidden="hiddens"):
     # init logger
     runner.init_logger(logger_name='easytorch-inference', log_file_name='validate_result')
 
@@ -28,11 +29,11 @@ def main(cfg: dict, runner: Runner, ckpt: str = None, task="create_data_store", 
     if task == "test":
         runner.test_process(cfg)
     elif task == "create_data_store":
-        runner.create_data_store(cfg=cfg, output_dir=dstore_dir)
+        runner.create_data_store(cfg=cfg, output_dir=dstore_dir, encoding_hidden_dim=encoding_hidden_dim)
     elif task == "knn_test":
         runner.test_knn_process(cfg=cfg, dstore_dir=dstore_dir, k=topk, used_hidden=used_hidden, knn_weight=0.75)
 
 
 if __name__ == '__main__':
     args = parse_args()
-    launch_runner(args.cfg, main, (args.ckpt, args.task, args.dstore_dir, args.topk), gpus=args.gpus)
+    launch_runner(args.cfg, main, (args.ckpt, args.task, args.dstore_dir, args.topk, args.encoding_hidden_dim), gpus=args.gpus)

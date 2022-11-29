@@ -293,7 +293,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         # test loop
         prediction = []
         real_value = []
-        for _, data in enumerate(self.test_data_loader):
+        for _, data in tqdm(enumerate(self.test_data_loader), desc="testing"):
             forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
             prediction.append(forward_return[0])        # preds = forward_return[0]
             real_value.append(forward_return[1])        # testy = forward_return[1]
@@ -339,7 +339,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
     @torch.no_grad()
     @master_only
-    def create_data_store(self, cfg, output_dir="./data_store", subset="train"):
+    def create_data_store(self, cfg, output_dir="./data_store", subset="train", encoding_hidden_dim=512):
         """Evaluate the model.
 
         Args:
@@ -362,7 +362,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
         pred_len = cfg["DATASET_INPUT_LEN"]
         label_len = cfg["DATASET_OUTPUT_LEN"]
-        encoding_hidden_dim = 512 * 4 # TODO: this need to be unified
+        encoding_hidden_dim = encoding_hidden_dim # TODO: this need to be unified
         info = {
             "pred_len": pred_len,
             "label_len": label_len,
@@ -392,14 +392,14 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             B, N, _= prediction.size()
             assert len(forward_return) > 2, "forward_return must contains pred, real, hiddens"
             encoding_hidden = forward_return[-1]
-            assert len(data) == 3, "future data, history data, idx"
+            assert len(data) == 4, "future data, history data, idx, long history"
             data_indice = data[2][1].unsqueeze(-1)
             data_indice = data_indice.expand(B, N).contiguous()
             node_indice = torch.arange(N).unsqueeze(0).expand(B, N)
 
             prediction = prediction.contiguous().view(-1, prediction.size()[-1])
             real_value = real_value.contiguous().view(-1, real_value.size()[-1])
-            encoding_hidden = encoding_hidden.view(-1, encoding_hidden.size()[-1])
+            encoding_hidden = encoding_hidden.contiguous().view(-1, encoding_hidden.size()[-1])
             data_indice = data_indice.contiguous().view(-1)
             node_indice = node_indice.contiguous().view(-1)
 

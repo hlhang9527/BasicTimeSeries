@@ -17,6 +17,7 @@ from .arch_zoo.informer_arch import Informer, InformerStack
 from .arch_zoo.pyraformer_arch import Pyraformer
 from .arch_zoo.tsformer_arch import TSFormer
 from .arch_zoo.step_arch import STEP
+from .arch_zoo.tswav2vec_arc import TSWav2Vec
 
 __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "D2STGNN", "STGCN", "MTGNN",
@@ -24,4 +25,4 @@ __all__ = ["STID", "GraphWaveNet", "DCRNN",
            "GTS", "DGCRN", "Linear",
            "DLinear", "NLinear", "Autoformer",
            "HINetwork", "FEDformer", "Informer",
-           "InformerStack", "Pyraformer", "TSFormer", "STEP"]
+           "InformerStack", "Pyraformer", "TSFormer", "STEP", "TSWav2Vec"]

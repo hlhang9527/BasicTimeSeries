@@ -6,9 +6,9 @@ sys.path.append(os.path.abspath(__file__ + "/../../.."))
 from easydict import EasyDict
 from basicts.losses import masked_mae
 
-from .step_arch import TSFormer
-from .step_runner import TSFormerRunner
-from .step_data import PretrainingDataset
+from basicts.archs import TSFormer
+from basicts.runners import TSFormerRunner
+from basicts.data import TimeSeriesForecastingDataset
 
 
 CFG = EasyDict()
@@ -16,12 +16,12 @@ CFG = EasyDict()
 # ================= general ================= #
 CFG.DESCRIPTION = "TSFormer(PEMS04) configuration"
 CFG.RUNNER = TSFormerRunner
-CFG.DATASET_CLS = PretrainingDataset
+CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "PEMS04"
 CFG.DATASET_TYPE = "Traffic flow"
-CFG.DATASET_INPUT_LEN = 288 * 7 * 2
+CFG.DATASET_INPUT_LEN = 288 * 7
 CFG.DATASET_OUTPUT_LEN = 12
-CFG.GPU_NUM = 2
+CFG.GPU_NUM = 1
 
 # ================= environment ================= #
 CFG.ENV = EasyDict()
@@ -40,7 +40,7 @@ CFG.MODEL.PARAM = {
     "num_heads":4,
     "mlp_ratio":4,
     "dropout":0.1,
-    "num_token":288 * 7 * 2 / 12,
+    "num_token":288 * 7 / 12,
     "mask_ratio":0.75,
     "encoder_depth":4,
     "decoder_depth":1,
@@ -82,7 +82,7 @@ CFG.TRAIN.NULL_VAL = 0.0
 # read data
 CFG.TRAIN.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.TRAIN.DATA.BATCH_SIZE = 6
+CFG.TRAIN.DATA.BATCH_SIZE = 2
 CFG.TRAIN.DATA.PREFETCH = False
 CFG.TRAIN.DATA.SHUFFLE = True
 CFG.TRAIN.DATA.NUM_WORKERS = 2

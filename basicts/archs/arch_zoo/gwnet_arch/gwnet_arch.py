@@ -251,7 +251,7 @@ class GraphWaveNet(nn.Module):
         skip = F.relu(skip)
         skip = F.relu(self.end_conv_1(skip))
         x = self.end_conv_2(skip) # B, L, N, C
-        return x, skip.contiguous().view(skip.shape[0], skip.shape[2], -1)
+        return x, skip.squeeze(-1).transpose(1, 2)
 
     def forward(self, history_data: torch.Tensor, future_data=None, batch_seen=None, epoch=None, train=None, sampled_adj=None, **kwargs):
         skip = self.encoding(history_data=history_data, sampled_adj=sampled_adj)

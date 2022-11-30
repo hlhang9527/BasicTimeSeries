@@ -14,7 +14,7 @@ from basicts.data import TimeSeriesForecastingDataset
 CFG = EasyDict()
 
 # ================= general ================= #
-CFG.DESCRIPTION = "TSFormer(PEMS04) configuration"
+CFG.DESCRIPTION = "TS(PEMS04) configuration"
 CFG.RUNNER = TsWav2VecRunner
 CFG.DATASET_CLS = TimeSeriesForecastingDataset
 CFG.DATASET_NAME = "PEMS04"
@@ -31,7 +31,7 @@ CFG.ENV.CUDNN.ENABLED = True
 
 # ================= model ================= #
 CFG.MODEL = EasyDict()
-CFG.MODEL.NAME = "TSFormer"
+CFG.MODEL.NAME = "TSWav2Vec"
 CFG.MODEL.ARCH = TSWav2Vec
 CFG.MODEL.PARAM = {
     "mode":"pre-train"

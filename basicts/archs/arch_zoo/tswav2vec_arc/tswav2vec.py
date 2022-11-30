@@ -1,12 +1,25 @@
-from calendar import TUESDAY
-from operator import mod
+from typing import Optional, Tuple, Union
 import torch
 from torch import nn
+from dataclasses import dataclass
 from transformers.models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
 from transformers.models.wav2vec2.feature_extraction_wav2vec2 import Wav2Vec2FeatureExtractor as Wav2Vec2FeatureExtractorMask
 from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2Model, \
      Wav2Vec2GumbelVectorQuantizer, _compute_mask_indices, _sample_negative_indices, Wav2Vec2ForPreTrainingOutput
 from transformers import Wav2Vec2PreTrainedModel
+
+@dataclass
+class TsWav2VecForPreTrainingOutput(Wav2Vec2ForPreTrainingOutput):
+    loss: Optional[torch.FloatTensor] = None
+    projected_states: torch.FloatTensor = None
+    projected_quantized_states: torch.FloatTensor = None
+    codevector_perplexity: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    contrastive_loss: Optional[torch.FloatTensor] = None
+    diversity_loss: Optional[torch.FloatTensor] = None
+    mask_num: Optional[torch.FloatTensor] = None
+    cnn_extract_feature: Optional[torch.FloatTensor] = None
 
 class TSWav2Vec(Wav2Vec2PreTrainedModel):
     def __init__(self, mode="pre-train"):
@@ -23,7 +36,7 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
                                 intermediate_size=192, hidden_act="gelu",
                                 layerdrop=0.1, initializer_range=0.02, layer_norm_eps=1e-5,
                                 feat_extract_norm="layer", feat_extract_activation="gelu",
-                                conv_dim=(32, 32, 32, 32, 32), conv_stride=(1, 1, 2, 2, 2), conv_kernel=(2, 2, 2, 2, 2),
+                                conv_dim=(32, 48, 64, 96), conv_stride=(2, 2, 2, 2), conv_kernel=(4, 4, 2, 2),
                                 num_conv_pos_embeddings=12, num_conv_pos_embedding_groups=4,
                                 conv_bias=True, do_stable_layer_norm=True,
                                 apply_spec_augment=True, mask_time_prob=mask_time_prob, mask_time_length=5, mask_time_min_masks=2,
@@ -111,7 +124,7 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
 
         mask_time_indices = torch.from_numpy(mask_time_indices).to(input_values.device)
         sampled_negative_indices = torch.from_numpy(sampled_negative_indices).to(input_values.device)
-        attention_mask = batch["attention_mask"]
+        attention_mask = batch["attention_mask"].to(input_values.device)
         # ================================================================================
         if mask_time_indices is not None:
             mask_time_indices = mask_time_indices.to(torch.bool)
@@ -143,6 +156,7 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
         quantized_features = self.project_q(quantized_features)
 
         loss = contrastive_loss = diversity_loss = None
+        mask_time_indices_sum =  None
         if sampled_negative_indices is not None:
             batch_size, sequence_length, hidden_size = quantized_features.shape
 
@@ -183,6 +197,8 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
             num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
             diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) #* mask_time_indices.sum()
             contrastive_loss = contrastive_loss / mask_time_indices.sum()
+
+            mask_time_indices_sum = mask_time_indices.sum()
             # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
             loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
 
@@ -191,7 +207,7 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
                 return (loss, transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
             return (transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
 
-        return Wav2Vec2ForPreTrainingOutput(
+        return TsWav2VecForPreTrainingOutput(
             loss=loss,
             projected_states=transformer_features,
             projected_quantized_states=quantized_features,
@@ -200,4 +216,6 @@ class TSWav2Vec(Wav2Vec2PreTrainedModel):
             attentions=outputs.attentions,
             contrastive_loss=contrastive_loss,
             diversity_loss=diversity_loss,
+            mask_num=mask_time_indices_sum,
+            cnn_extract_feature = extract_features,
         )

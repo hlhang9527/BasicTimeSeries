@@ -1,7 +1,10 @@
+import time
+from tqdm import tqdm
 import torch
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Dict
 
 from easytorch.utils.dist import master_only
+from easytorch.utils import TimePredictor, get_local_rank
 from ...data.registry import SCALER_REGISTRY
 from ...runners import BaseTimeSeriesForecastingRunner
 
@@ -41,6 +44,87 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
         data = data[:, :, :, self.target_features]
         return data
 
+    def train(self, cfg: Dict):
+        """Train model.
+
+        Train process:
+        [init_training]
+        for in train_epoch
+            [on_epoch_start]
+            for in train iters
+                [train_iters]
+            [on_epoch_end] ------> Epoch Val: val every n epoch
+                                    [on_validating_start]
+                                    for in val iters
+                                        val iter
+                                    [on_validating_end]
+        [on_training_end]
+
+        Args:
+            cfg (Dict): config
+        """
+
+        self.init_training(cfg)
+
+        # train time predictor
+        train_time_predictor = TimePredictor(self.start_epoch, self.num_epochs)
+
+        # training loop
+        for epoch_index in range(self.start_epoch, self.num_epochs):
+            epoch = epoch_index + 1
+            self.on_epoch_start(epoch)
+            epoch_start_time = time.time()
+            # start training
+            self.model.train()
+
+            # tqdm process bar
+            data_iter = tqdm(self.train_data_loader) if get_local_rank() == 0 else self.train_data_loader
+
+            # data loop
+            for iter_index, data in enumerate(data_iter):
+                batch_size, pred_len, num_node, channel = data[0].size()
+                self.optim.zero_grad()
+
+                for batch_idx in range(batch_size):
+                    new_data = []
+                    new_data.append(data[0][[batch_idx], ...])
+                    new_data.append(data[1][[batch_idx], ...])
+                    new_data.append([data[2][0][[batch_idx]],  data[2][1][[batch_idx]], data[2][2][[batch_idx]]])
+                    new_data.append(data[3][[batch_idx], ...])
+                    forward_return = self.train_iters(epoch, iter_index, new_data)
+                    loss = forward_return.loss
+
+                    loss = loss / batch_size
+                    loss.backward()
+
+                if self.clip_grad_param is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), **self.clip_grad_param)
+
+                self.optim.step()
+
+            # update lr_scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            epoch_end_time = time.time()
+            # epoch time
+            self.update_epoch_meter('train_time', epoch_end_time - epoch_start_time)
+            self.on_epoch_end(epoch)
+
+            expected_end_time = train_time_predictor.get_expected_end_time(epoch)
+
+            # estimate training finish time
+            if epoch < self.num_epochs:
+                self.logger.info('The estimated training finish time is {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expected_end_time))))
+
+        # log training finish time
+        self.logger.info('The training finished at {}'.format(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        ))
+
+        self.on_training_end()
+
     def train_iters(self, epoch: int, iter_index: int, data: Union[torch.Tensor, Tuple]) -> torch.Tensor:
         """Training details.
 
@@ -55,7 +139,7 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
 
         iter_num = (epoch-1) * self.iter_per_epoch + iter_index
         forward_return = self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True)
-        return forward_return.loss
+        return forward_return
 
     def forward(self, data: tuple, epoch:int = None, iter_num: int = None, train:bool = True, **kwargs) -> tuple:
         """feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.

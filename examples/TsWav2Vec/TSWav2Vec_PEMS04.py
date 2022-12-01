@@ -22,7 +22,10 @@ CFG.DATASET_TYPE = "Traffic flow"
 CFG.DATASET_INPUT_LEN = 288 * 7
 CFG.DATASET_OUTPUT_LEN = 12
 CFG.GPU_NUM = 0
-
+CFG.DATASET_ARGS = {
+    "debug": False,
+    "start_seq_len": 288 * 7,
+}
 # ================= environment ================= #
 CFG.ENV = EasyDict()
 CFG.ENV.SEED = 0
@@ -34,11 +37,14 @@ CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = "TSWav2Vec"
 CFG.MODEL.ARCH = TSWav2Vec
 CFG.MODEL.PARAM = {
-    "mode":"pre-train"
+    "mode":"pre-train",
+    "conv_dim": (256, 256, 256, 256),
+    "conv_stride": (3, 2, 2, 1),
+    "conv_kernel": (4, 3, 2, 2),
 }
 CFG.MODEL.FROWARD_FEATURES = [0]
 CFG.MODEL.TARGET_FEATURES = [0]
-
+CFG.MODEL.DDP_FIND_UNUSED_PARAMETERS = True
 # ================= optim ================= #
 CFG.TRAIN = EasyDict()
 CFG.TRAIN.LOSS = masked_mae
@@ -72,7 +78,7 @@ CFG.TRAIN.NULL_VAL = 0.0
 # read data
 CFG.TRAIN.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.TRAIN.DATA.BATCH_SIZE = 2
+CFG.TRAIN.DATA.BATCH_SIZE = 1
 CFG.TRAIN.DATA.PREFETCH = False
 CFG.TRAIN.DATA.SHUFFLE = True
 CFG.TRAIN.DATA.NUM_WORKERS = 2
@@ -86,12 +92,11 @@ CFG.VAL.DATA = EasyDict()
 # read data
 CFG.VAL.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.VAL.DATA.BATCH_SIZE = 8
+CFG.VAL.DATA.BATCH_SIZE = 1
 CFG.VAL.DATA.PREFETCH = False
 CFG.VAL.DATA.SHUFFLE = False
 CFG.VAL.DATA.NUM_WORKERS = 2
 CFG.VAL.DATA.PIN_MEMORY = True
-
 # ================= test ================= #
 CFG.TEST = EasyDict()
 CFG.TEST.INTERVAL = 1
@@ -101,7 +106,7 @@ CFG.TEST.DATA = EasyDict()
 # read data
 CFG.TEST.DATA.DIR = "datasets/" + CFG.DATASET_NAME
 # dataloader args, optional
-CFG.TEST.DATA.BATCH_SIZE = 8
+CFG.TEST.DATA.BATCH_SIZE = 1
 CFG.TEST.DATA.PREFETCH = False
 CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 2

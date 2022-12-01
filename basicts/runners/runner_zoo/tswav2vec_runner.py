@@ -1,3 +1,4 @@
+from curses import noecho
 import time
 from tqdm import tqdm
 import torch
@@ -7,13 +8,16 @@ from easytorch.utils.dist import master_only
 from easytorch.utils import TimePredictor, get_local_rank
 from ...data.registry import SCALER_REGISTRY
 from ...runners import BaseTimeSeriesForecastingRunner
-
+from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+from transformers.models.wav2vec2.feature_extraction_wav2vec2 import Wav2Vec2FeatureExtractor
+from torch.nn.parallel import DistributedDataParallel
 
 class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         self.forward_features = cfg["MODEL"].get("FROWARD_FEATURES", None)
         self.target_features = cfg["MODEL"].get("TARGET_FEATURES", None)
+        self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor(return_attention_mask=True, feature_size=1, padding_value=0)
 
     def select_input_features(self, data: torch.Tensor) -> torch.Tensor:
         """Select input features and reshape data to fit the target model.
@@ -44,86 +48,20 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
         data = data[:, :, :, self.target_features]
         return data
 
-    def train(self, cfg: Dict):
-        """Train model.
+    def init_training(self, cfg: dict):
+        super().init_training(cfg)
+        self.register_epoch_meter("train_loss", "train", "{:.4f}")
+        self.register_epoch_meter("train_diversity_loss", "train", "{:.4f}")
 
-        Train process:
-        [init_training]
-        for in train_epoch
-            [on_epoch_start]
-            for in train iters
-                [train_iters]
-            [on_epoch_end] ------> Epoch Val: val every n epoch
-                                    [on_validating_start]
-                                    for in val iters
-                                        val iter
-                                    [on_validating_end]
-        [on_training_end]
+    def init_validation(self, cfg: dict):
+        super().init_validation(cfg)
+        self.register_epoch_meter("val_loss", "val", "{:.4f}")
+        self.register_epoch_meter("val_diversity_loss", "val", "{:.4f}")
 
-        Args:
-            cfg (Dict): config
-        """
-
-        self.init_training(cfg)
-
-        # train time predictor
-        train_time_predictor = TimePredictor(self.start_epoch, self.num_epochs)
-
-        # training loop
-        for epoch_index in range(self.start_epoch, self.num_epochs):
-            epoch = epoch_index + 1
-            self.on_epoch_start(epoch)
-            epoch_start_time = time.time()
-            # start training
-            self.model.train()
-
-            # tqdm process bar
-            data_iter = tqdm(self.train_data_loader) if get_local_rank() == 0 else self.train_data_loader
-
-            # data loop
-            for iter_index, data in enumerate(data_iter):
-                batch_size, pred_len, num_node, channel = data[0].size()
-                self.optim.zero_grad()
-
-                for batch_idx in range(batch_size):
-                    new_data = []
-                    new_data.append(data[0][[batch_idx], ...])
-                    new_data.append(data[1][[batch_idx], ...])
-                    new_data.append([data[2][0][[batch_idx]],  data[2][1][[batch_idx]], data[2][2][[batch_idx]]])
-                    new_data.append(data[3][[batch_idx], ...])
-                    forward_return = self.train_iters(epoch, iter_index, new_data)
-                    loss = forward_return.loss
-
-                    loss = loss / batch_size
-                    loss.backward()
-
-                if self.clip_grad_param is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), **self.clip_grad_param)
-
-                self.optim.step()
-
-            # update lr_scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
-
-            epoch_end_time = time.time()
-            # epoch time
-            self.update_epoch_meter('train_time', epoch_end_time - epoch_start_time)
-            self.on_epoch_end(epoch)
-
-            expected_end_time = train_time_predictor.get_expected_end_time(epoch)
-
-            # estimate training finish time
-            if epoch < self.num_epochs:
-                self.logger.info('The estimated training finish time is {}'.format(
-                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expected_end_time))))
-
-        # log training finish time
-        self.logger.info('The training finished at {}'.format(
-            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-        ))
-
-        self.on_training_end()
+    def init_test(self, cfg: dict):
+        super().init_test(cfg)
+        self.register_epoch_meter("test_loss", "test", "{:.4f}")
+        self.register_epoch_meter("test_diversity_loss", "test", "{:.4f}")
 
     def train_iters(self, epoch: int, iter_index: int, data: Union[torch.Tensor, Tuple]) -> torch.Tensor:
         """Training details.
@@ -139,7 +77,9 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
 
         iter_num = (epoch-1) * self.iter_per_epoch + iter_index
         forward_return = self.forward(data=data, epoch=epoch, iter_num=iter_num, train=True)
-        return forward_return
+        self.update_epoch_meter("train_loss", forward_return.loss.item())
+        self.update_epoch_meter("train_diversity_loss", forward_return.diversity_loss.item())
+        return forward_return[0]
 
     def forward(self, data: tuple, epoch:int = None, iter_num: int = None, train:bool = True, **kwargs) -> tuple:
         """feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.
@@ -156,14 +96,69 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
 
         # preprocess
         future_data, history_data, idx,  long_history_data = data
+ # =======================reformat=====================================================================
+
+        history_data_for_wv = history_data.permute(0, 2, 3, 1)     # B, N, 1, L * P
+        history_data_for_wv = history_data_for_wv[:, :, 0, :]
+        batch_size, num_node, length = history_data_for_wv.size()
+
+        input_values = history_data_for_wv.contiguous().view(batch_size * num_node, length)
+        input_values = self.to_running_device(input_values)
+
+        features = [{"input_values": input_values[i, :]} for i in range(input_values.size()[0])]
+        batch = self.wav2vec_feature_extractor.pad(
+            features,
+            padding="longest",
+            pad_to_multiple_of=None,
+            return_tensors="pt",
+        )
+        batch_size = batch["input_values"].shape[0]
+        if isinstance(self.model, DistributedDataParallel):
+            tmp_model = self.model.module
+        else:
+            tmp_model = self.model       	
+        mask_indices_seq_length = tmp_model._get_feat_extract_output_lengths(batch["input_values"].shape[-1])
+        # make sure masked sequence length is a Python scalar
+        mask_indices_seq_length = int(mask_indices_seq_length)
+
+        # make sure that no loss is computed on padded inputs
+        attention_mask = None
+        if batch.get("attention_mask") is not None:
+            # compute real output lengths according to convolution formula
+            batch["sub_attention_mask"] = tmp_model._get_feature_vector_attention_mask(
+                mask_indices_seq_length, batch["attention_mask"])
+            attention_mask = batch["attention_mask"]
+            attention_mask = self.to_running_device(attention_mask)
+
+        features_shape = (batch_size, mask_indices_seq_length)
+        # sample negative indices
+        sampled_negative_indices = None
+        mask_time_indices = None
+        if tmp_model.mode == "pre-train":
+                    # sample randomly masked indices
+            mask_time_indices = _compute_mask_indices(features_shape, tmp_model.config.mask_time_prob, tmp_model.config.mask_time_length, attention_mask=batch.get("sub_attention_mask"))
+            sampled_negative_indices = _sample_negative_indices(features_shape, tmp_model.config.num_negatives, mask_time_indices=mask_time_indices)
+            sampled_negative_indices = torch.from_numpy(sampled_negative_indices)
+
+            sampled_negative_indices = self.to_running_device(sampled_negative_indices)
+
+            mask_time_indices = torch.from_numpy(mask_time_indices)
+            mask_time_indices = self.to_running_device(mask_time_indices)
+
+
+        # ================================================================================
+        history_data = self.select_input_features(history_data)
         history_data    = self.to_running_device(history_data)      # B, L, N, C
         future_data     = self.to_running_device(future_data)       # B, L, N, C
         batch_size, length, num_nodes, _ = future_data.shape
 
-        history_data = self.select_input_features(history_data)
-
         # feed forward
-        tswav2vec_output = self.model(history_data=history_data, future_data=None, batch_seen=iter_num, epoch=epoch)
+        tswav2vec_output = self.model(input_values=input_values, attention_mask=attention_mask,
+                                      sampled_negative_indices=sampled_negative_indices,
+                                      mask_time_indices=mask_time_indices,
+                                      output_attentions=False, output_hidden_states=False, return_dict=True)
+        mask_time_indices_sum = int(mask_time_indices.sum())
+        tswav2vec_output.loss = tswav2vec_output.loss / mask_time_indices_sum
 
         return tswav2vec_output
 
@@ -178,10 +173,30 @@ class TsWav2VecRunner(BaseTimeSeriesForecastingRunner):
 
         for _, data in enumerate(self.test_data_loader):
             forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
-            # re-scale data
-            prediction_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[0], **self.scaler["args"])
-            real_value_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[1], **self.scaler["args"])
-            # metrics
-            for metric_name, metric_func in self.metrics.items():
-                metric_item = metric_func(prediction_rescaled, real_value_rescaled, null_val=self.null_val)
-                self.update_epoch_meter("test_"+metric_name, metric_item.item())
+            self.update_epoch_meter("test_loss", forward_return.loss.item())
+            self.update_epoch_meter("test_diversity_loss", forward_return.diversity_loss.item())
+
+    def val_iters(self, iter_index: int, data: Union[torch.Tensor, Tuple]):
+        """Validation details.
+
+        Args:
+            data (Union[torch.Tensor, Tuple]): Data provided by DataLoader
+            train_epoch (int): current epoch if in training process. Else None.
+            iter_index (int): current iter.
+        """
+
+        forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
+        self.update_epoch_meter("val_loss", forward_return.loss.item())
+        self.update_epoch_meter("val_diversity_loss", forward_return.diversity_loss.item())
+
+    @master_only
+    def on_validating_end(self, train_epoch: Optional[int]):
+        """Callback at the end of validating.
+
+        Args:
+            train_epoch (Optional[int]): current epoch if in training process.
+        """
+
+        if train_epoch is not None:
+            self.save_best_model(train_epoch, "val_loss", greater_best=False)
+

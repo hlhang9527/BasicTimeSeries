@@ -1,12 +1,25 @@
+from tkinter import N
 import torch
 from torch import nn
 from timm.models.vision_transformer import trunc_normal_
+from torch.nn.functional import one_hot
 
 from .patch import PatchEmbedding
 from .mask import MaskGenerator
 from .positional_encoding import PositionalEncoding
 from .transformer_layers import TransformerLayers
 
+def batch_cosine_similarity(x, y):
+    # 计算分母
+    l2_x = torch.norm(x, dim=2, p=2) + 1e-7  # avoid 0, l2 norm, num_heads x batch_size x hidden_dim==>num_heads x batch_size
+    l2_y = torch.norm(y, dim=2, p=2) + 1e-7  # avoid 0, l2 norm, num_heads x batch_size x hidden_dim==>num_heads x batch_size
+    l2_m = torch.matmul(l2_x.unsqueeze(dim=2), l2_y.unsqueeze(dim=2).transpose(1, 2))
+    # 计算分子
+    l2_z = torch.matmul(x, y.transpose(1, 2))
+    # cos similarity affinity matrix
+    cos_affnity = l2_z / l2_m
+    adj = cos_affnity
+    return adj
 
 def unshuffle(shuffled_tokens):
     dic = {}
@@ -21,9 +34,10 @@ def unshuffle(shuffled_tokens):
 class TSFormer(nn.Module):
     """An efficient unsupervised pre-training model for Time Series based on transFormer blocks. (TSFormer)"""
 
-    def __init__(self, patch_size, in_channel, embed_dim, num_heads, mlp_ratio, dropout, num_token, mask_ratio, encoder_depth, decoder_depth, mode="pre-train"):
+    def __init__(self, patch_size, in_channel, embed_dim, num_heads, mlp_ratio, dropout, num_token, mask_ratio, encoder_depth, decoder_depth,
+                       mode="pre-train", mask_last_token=False, pretrain_path="", requires_grad=True, decoding_knn=0):
         super().__init__()
-        assert mode in ["pre-train", "forecasting"], "Error mode."
+        assert mode in ["pre-train", "forecasting", "3d-finetune"], "Error mode."
         self.patch_size = patch_size
         self.in_channel = in_channel
         self.embed_dim = embed_dim
@@ -46,7 +60,7 @@ class TSFormer(nn.Module):
         # # positional encoding
         self.positional_encoding = PositionalEncoding(embed_dim, dropout=dropout)
         # # masking
-        self.mask = MaskGenerator(num_token, mask_ratio)
+        self.mask = MaskGenerator(num_token, mask_ratio, mask_last_token=mask_last_token)
         # encoder
         self.encoder = TransformerLayers(embed_dim, encoder_depth, mlp_ratio, num_heads, dropout)
 
@@ -55,12 +69,31 @@ class TSFormer(nn.Module):
         self.enc_2_dec_emb = nn.Linear(embed_dim, embed_dim, bias=True)
         # # mask token
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
+        # neigbor token
+        self.decoding_knn = decoding_knn
+        if self.decoding_knn > 0:
+            self.neighbor_token = nn.Parameter(torch.zeros(1, 1, self.decoding_knn, embed_dim))
+            trunc_normal_(self.neighbor_token)
+        self.neighbor_token = nn.Parameter(torch.zeros(1, 1, ))
         # # decoder
         self.decoder = TransformerLayers(embed_dim, decoder_depth, mlp_ratio, num_heads, dropout)
 
         # # prediction (reconstruction) layer
         self.output_layer = nn.Linear(embed_dim, patch_size)
         self.initialize_weights()
+        if pretrain_path:
+            self.load_pre_trained_model(pretrain_path=pretrain_path, requires_grad=requires_grad, strict=True)
+
+
+    def load_pre_trained_model(self, pretrain_path="", requires_grad=False, strict=False):
+        """Load pre-trained model"""
+        print("load pretrained tsformer from: {}".format(pretrain_path))
+        # load parameters
+        checkpoint_dict = torch.load(pretrain_path)
+        self.load_state_dict(checkpoint_dict["model_state_dict"], strict=strict)
+        # freeze parameters
+        for param in self.parameters():
+            param.requires_grad = requires_grad
 
     def initialize_weights(self):
         # positional encoding
@@ -104,7 +137,7 @@ class TSFormer(nn.Module):
 
         return hidden_states_unmasked, unmasked_token_index, masked_token_index
 
-    def decoding(self, hidden_states_unmasked, masked_token_index):
+    def decoding(self, hidden_states_unmasked, masked_token_index=None):
         """Decoding process of TSFormer: encoder 2 decoder layer, add mask tokens, Transformer layers, predict.
 
         Args:
@@ -114,26 +147,55 @@ class TSFormer(nn.Module):
         Returns:
             torch.Tensor: reconstructed data
         """
-        batch_size, num_nodes, _, _ = hidden_states_unmasked.shape
+        batch_size, num_nodes, unmask_len, embedding_dim = hidden_states_unmasked.shape
+        if self.decoding_knn > 0:
+            hidden_states_full_sim = hidden_states_unmasked.detach().contiguous().view(batch_size, num_nodes, -1) #B, N, P * (1-r) * d
+            batch_sim = batch_cosine_similarity(hidden_states_full_sim, hidden_states_full_sim)
+            mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(batch_sim.device)
+            batch_sim.masked_fill_(mask, 0)
+            topk, topk_indices = torch.topk(batch_sim, self.decoding_knn, dim=-1)
+            topk_onehot = one_hot(topk_indices, num_nodes) # B, N, K, N
+            knn_hidden_states_full_sim = torch.bmm(topk_onehot.view(batch_size, -1, num_nodes).float(), hidden_states_full_sim) # B, N, K, P * (1-r) * d
+            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size, num_nodes, self.decoding_knn, -1, embedding_dim) # B, N, K, P * (1-r), d
+            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size * num_nodes, self.decoding_knn * unmask_len, embedding_dim) # B*N, K*l, d
+            sub_batch_sim = batch_cosine_similarity(hidden_states_unmasked[:, :, -1, :].detach().contiguous().view(batch_size*num_nodes, 1, embedding_dim),
+                                                    knn_hidden_states_full_sim) # B, N, 1, K * P
+            sub_topk, sub_topk_indices = torch.topk(sub_batch_sim, self.decoding_knn, dim=-1) # B, N, 1, K
+            sub_topk_onehot = one_hot(sub_topk_indices, unmask_len * self.decoding_knn) # B, N, 1, K, K*l
+            sub_knn_hidden_states = torch.bmm(sub_topk_onehot.view(batch_size * num_nodes, self.decoding_knn, self.decoding_knn * unmask_len).float(),
+                                              knn_hidden_states_full_sim) # B*N, K, d
+            sub_knn_hidden_states = sub_knn_hidden_states.view(batch_size, num_nodes, self.decoding_knn, embedding_dim).to(hidden_states_unmasked.device)
+
+
+
 
         # encoder 2 decoder layer
         hidden_states_unmasked = self.enc_2_dec_emb(hidden_states_unmasked)
 
         # add mask tokens
-        hidden_states_masked = self.positional_encoding(
-            self.mask_token.expand(batch_size, num_nodes, len(masked_token_index), hidden_states_unmasked.shape[-1]),
-            index=masked_token_index
-            )
-        hidden_states_full = torch.cat([hidden_states_unmasked, hidden_states_masked], dim=-2)   # B, N, P, d
+        if masked_token_index is not None:
+            hidden_states_masked = self.positional_encoding(
+                self.mask_token.expand(batch_size, num_nodes, len(masked_token_index), hidden_states_unmasked.shape[-1]),
+                index=masked_token_index
+                )
+            hidden_states_full = torch.cat([hidden_states_unmasked, hidden_states_masked], dim=-2)   # B, N, P, d
+        else:
+            hidden_states_full = hidden_states_unmasked
 
+        batch_size, num_nodes, full_len, embedding_dim = hidden_states_full.size()
+        if self.decoding_knn > 0:
+            sub_knn_hidden_states = self.enc_2_dec_emb(sub_knn_hidden_states)
+            sub_knn_hidden_states = self.neighbor_token.expand(batch_size, num_nodes, self.decoding_knn, embedding_dim) + sub_knn_hidden_states
+            hidden_states_full = torch.cat([hidden_states_full, sub_knn_hidden_states], dim=-2)
         # decoding
         hidden_states_full = self.decoder(hidden_states_full)
         hidden_states_full = self.decoder_norm(hidden_states_full)
 
+        hidden_states_full = hidden_states_full[:, :, :full_len, :]
         # prediction (reconstruction)
         reconstruction_full = self.output_layer(hidden_states_full.view(batch_size, num_nodes, -1, self.embed_dim))
 
-        return reconstruction_full
+        return reconstruction_full, hidden_states_full
 
     def get_reconstructed_masked_tokens(self, reconstruction_full, real_value_full, unmasked_token_index, masked_token_index):
         """Get reconstructed masked tokens and corresponding ground-truth for subsequent loss computing.
@@ -182,10 +244,15 @@ class TSFormer(nn.Module):
             # encoding
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
             # decoding
-            reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
+            reconstruction_full, hidden_states_full = self.decoding(hidden_states_unmasked, masked_token_index)
             # for subsequent loss computing
             reconstruction_masked_tokens, label_masked_tokens = self.get_reconstructed_masked_tokens(reconstruction_full, history_data, unmasked_token_index, masked_token_index)
             return reconstruction_masked_tokens, label_masked_tokens
+        elif self.mode == "3d-finetune":
+            hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
+            # decoding
+            reconstruction_full, hidden_states_full_decoding = self.decoding(hidden_states_unmasked, masked_token_index=masked_token_index)
+            return hidden_states_unmasked, hidden_states_full_decoding
         else:
             hidden_states_full, _, _ = self.encoding(history_data, mask=False)
-            return hidden_states_full
+            return hidden_states_full, None

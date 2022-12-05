@@ -9,7 +9,7 @@ from .discrete_graph_learning import DiscreteGraphLearning
 class STEP(nn.Module):
     """Pre-training Enhanced Spatial-temporal Graph Neural Network for Multivariate Time Series Forecasting"""
 
-    def __init__(self, dataset_name, pre_trained_tsformer_path, tsformer_args, backend_args, dgl_args):
+    def __init__(self, dataset_name, pre_trained_tsformer_path, tsformer_args, backend_args, dgl_args, requires_grad=False, strict=False):
         super().__init__()
         self.dataset_name = dataset_name
         self.pre_trained_tsformer_path = pre_trained_tsformer_path
@@ -19,18 +19,21 @@ class STEP(nn.Module):
         self.backend = GraphWaveNet(**backend_args)
 
         # load pre-trained tsformer
-        self.load_pre_trained_model()
+        if pre_trained_tsformer_path:
+            self.load_pre_trained_model(pre_trained_tsformer_path=pre_trained_tsformer_path, requires_grad=requires_grad, strict=strict)
 
         # discrete graph learning
         self.dynamic_graph_learning = DiscreteGraphLearning(**dgl_args)
-        self.fc_his = nn.Sequential(nn.Linear(96, 512), nn.ReLU(), nn.Dropout(0.5), nn.Linear(512, 256), nn.ReLU())
+        self.fc_his = nn.Sequential(nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU())
+        if self.tsformer.mode == "3d-finetune":
+            self.fc_his_dec = nn.Sequential(nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU())
 
-    def load_pre_trained_model(self):
+    def load_pre_trained_model(self, pre_trained_tsformer_path="", requires_grad=False, strict=False):
         """Load pre-trained model"""
 
         # load parameters
-        checkpoint_dict = torch.load(self.pre_trained_tsformer_path)
-        self.tsformer.load_state_dict(checkpoint_dict["model_state_dict"])
+        checkpoint_dict = torch.load(pre_trained_tsformer_path)
+        self.tsformer.load_state_dict(checkpoint_dict["model_state_dict"], strict=strict)
         # freeze parameters
         for param in self.tsformer.parameters():
             param.requires_grad = False
@@ -57,7 +60,11 @@ class STEP(nn.Module):
         batch_size, _, num_nodes, _ = short_term_history.shape
 
         # discrete graph learning & feed forward of TSFormer
-        hidden_states = self.tsformer(long_term_history[..., [0]])
+        hidden_states, hidden_states_decoding = None, None
+        if self.tsformer.mode == "3d-finetune":
+            hidden_states, hidden_states_decoding  = self.tsformer(long_term_history[..., [0]])
+        else:
+            hidden_states = self.tsformer(long_term_history[..., [0]])
         bernoulli_unnorm, adj_knn, sampled_adj = self.dynamic_graph_learning(long_term_history, hidden_states.reshape(batch_size, num_nodes, -1))
 
         # enhancing downstream STGNNs
@@ -65,6 +72,10 @@ class STEP(nn.Module):
         graph_wv_skip = self.backend.encoding(history_data=short_term_history[:, :, :, :2], sampled_adj=sampled_adj)
         hidden_states_fc = self.fc_his(hidden_states).transpose(1, 2).unsqueeze(-1)
         graph_wv_skip = graph_wv_skip + hidden_states_fc
+        if hidden_states_decoding is not None:
+            hidden_states_decoding = hidden_states_decoding[:, :, -1, :]
+            hidden_states_decoding_fc = self.fc_his_dec(hidden_states_decoding).transpose(1, 2).unsqueeze(-1)
+            graph_wv_skip = graph_wv_skip + hidden_states_decoding_fc
         prediction, last_hidden = self.backend.output_layer(skip=graph_wv_skip)
 
         # graph structure loss coefficient

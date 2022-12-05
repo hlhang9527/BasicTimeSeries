@@ -25,7 +25,7 @@ class TimeSeriesForecastingDataset(Dataset):
         if self.start_seq_len and mode == "train":
             self.index=self.index[start_seq_len:]
         if debug:
-            self.index = self.index[:100]
+            self.index = self.index[:10]
         # mask
         self.mask = torch.zeros(self.seq_len, self.data.shape[1], self.data.shape[2])
 

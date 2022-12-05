@@ -308,8 +308,12 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         # test performance of different horizon
         for i in self.evaluation_horizons:
             # For horizon i, only calculate the metrics **at that time** slice here.
-            pred = prediction[:, i, :, :]
-            real = real_value[:, i, :, :]
+            try:
+                pred = prediction[:, i, :, :]
+                real = real_value[:, i, :, :]
+            except:
+                pred = prediction[:, i, :]
+                real = real_value[:, i, :]
             # metrics
             metric_results = {}
             for metric_name, metric_func in self.metrics.items():

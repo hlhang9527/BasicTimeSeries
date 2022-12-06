@@ -295,8 +295,8 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         real_value = []
         for _, data in tqdm(enumerate(self.test_data_loader), desc="testing"):
             forward_return = self.forward(data, epoch=None, iter_num=None, train=False)
-            prediction.append(forward_return[0])        # preds = forward_return[0]
-            real_value.append(forward_return[1])        # testy = forward_return[1]
+            prediction.append(forward_return[0].detach().cpu())        # preds = forward_return[0]
+            real_value.append(forward_return[1].detach().cpu())        # testy = forward_return[1]
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
         # re-scale data

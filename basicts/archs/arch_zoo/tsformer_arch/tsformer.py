@@ -35,7 +35,7 @@ class TSFormer(nn.Module):
     """An efficient unsupervised pre-training model for Time Series based on transFormer blocks. (TSFormer)"""
 
     def __init__(self, patch_size, in_channel, embed_dim, num_heads, mlp_ratio, dropout, num_token, mask_ratio, encoder_depth, decoder_depth,
-                       mode="pre-train", mask_last_token=False, pretrain_path="", requires_grad=True, decoding_knn=0):
+                       mode="pre-train", mask_last_token=False, pretrain_path="", requires_grad=True, decoding_knn=0, strict=True, decoding_knn_node=0):
         super().__init__()
         assert mode in ["pre-train", "forecasting", "3d-finetune"], "Error mode."
         self.patch_size = patch_size
@@ -71,6 +71,7 @@ class TSFormer(nn.Module):
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
         # neigbor token
         self.decoding_knn = decoding_knn
+        self.decoding_knn_node = decoding_knn_node if decoding_knn_node else decoding_knn
         if self.decoding_knn > 0:
             self.neighbor_token = nn.Parameter(torch.zeros(1, 1, self.decoding_knn, embed_dim))
             trunc_normal_(self.neighbor_token)
@@ -82,7 +83,7 @@ class TSFormer(nn.Module):
         self.output_layer = nn.Linear(embed_dim, patch_size)
         self.initialize_weights()
         if pretrain_path:
-            self.load_pre_trained_model(pretrain_path=pretrain_path, requires_grad=requires_grad, strict=True)
+            self.load_pre_trained_model(pretrain_path=pretrain_path, requires_grad=requires_grad, strict=strict)
 
 
     def load_pre_trained_model(self, pretrain_path="", requires_grad=False, strict=False):
@@ -153,16 +154,16 @@ class TSFormer(nn.Module):
             batch_sim = batch_cosine_similarity(hidden_states_full_sim, hidden_states_full_sim)
             mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(batch_sim.device)
             batch_sim.masked_fill_(mask, 0)
-            topk, topk_indices = torch.topk(batch_sim, self.decoding_knn, dim=-1)
+            topk, topk_indices = torch.topk(batch_sim, self.decoding_knn_node, dim=-1)
             topk_onehot = one_hot(topk_indices, num_nodes) # B, N, K, N
             knn_hidden_states_full_sim = torch.bmm(topk_onehot.view(batch_size, -1, num_nodes).float(), hidden_states_full_sim) # B, N, K, P * (1-r) * d
-            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size, num_nodes, self.decoding_knn, -1, embedding_dim) # B, N, K, P * (1-r), d
-            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size * num_nodes, self.decoding_knn * unmask_len, embedding_dim) # B*N, K*l, d
+            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size, num_nodes, self.decoding_knn_node, -1, embedding_dim) # B, N, K, P * (1-r), d
+            knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size * num_nodes, self.decoding_knn_node * unmask_len, embedding_dim) # B*N, K*l, d
             sub_batch_sim = batch_cosine_similarity(hidden_states_unmasked[:, :, -1, :].detach().contiguous().view(batch_size*num_nodes, 1, embedding_dim),
                                                     knn_hidden_states_full_sim) # B, N, 1, K * P
             sub_topk, sub_topk_indices = torch.topk(sub_batch_sim, self.decoding_knn, dim=-1) # B, N, 1, K
-            sub_topk_onehot = one_hot(sub_topk_indices, unmask_len * self.decoding_knn) # B, N, 1, K, K*l
-            sub_knn_hidden_states = torch.bmm(sub_topk_onehot.view(batch_size * num_nodes, self.decoding_knn, self.decoding_knn * unmask_len).float(),
+            sub_topk_onehot = one_hot(sub_topk_indices, unmask_len * self.decoding_knn_node) # B, N, 1, K, K*l
+            sub_knn_hidden_states = torch.bmm(sub_topk_onehot.view(batch_size * num_nodes, self.decoding_knn, self.decoding_knn_node * unmask_len).float(),
                                               knn_hidden_states_full_sim) # B*N, K, d
             sub_knn_hidden_states = sub_knn_hidden_states.view(batch_size, num_nodes, self.decoding_knn, embedding_dim).to(hidden_states_unmasked.device)
 

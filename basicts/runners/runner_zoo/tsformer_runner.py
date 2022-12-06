@@ -70,21 +70,21 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         # real_value = self.select_target_features(future_data)
         return reconstruction_masked_tokens, label_masked_tokens
 
-    @torch.no_grad()
-    @master_only
-    def test(self):
-        """Evaluate the model.
+    # @torch.no_grad()
+    # @master_only
+    # def test(self):
+    #     """Evaluate the model.
 
-        Args:
-            train_epoch (int, optional): current epoch if in training process.
-        """
+    #     Args:
+    #         train_epoch (int, optional): current epoch if in training process.
+    #     """
 
-        for _, data in enumerate(self.test_data_loader):
-            forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
-            # re-scale data
-            prediction_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[0], **self.scaler["args"])
-            real_value_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[1], **self.scaler["args"])
-            # metrics
-            for metric_name, metric_func in self.metrics.items():
-                metric_item = metric_func(prediction_rescaled, real_value_rescaled, null_val=self.null_val)
-                self.update_epoch_meter("test_"+metric_name, metric_item.item())
+    #     for _, data in enumerate(self.test_data_loader):
+    #         forward_return = self.forward(data=data, epoch=None, iter_num=None, train=False)
+    #         # re-scale data
+    #         prediction_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[0], **self.scaler["args"])
+    #         real_value_rescaled = SCALER_REGISTRY.get(self.scaler["func"])(forward_return[1], **self.scaler["args"])
+    #         # metrics
+    #         for metric_name, metric_func in self.metrics.items():
+    #             metric_item = metric_func(prediction_rescaled, real_value_rescaled, null_val=self.null_val)
+    #             self.update_epoch_meter("test_"+metric_name, metric_item.item())

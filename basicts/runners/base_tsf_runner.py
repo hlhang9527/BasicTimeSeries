@@ -1,5 +1,6 @@
 import math
 import functools
+from select import POLLOUT
 from typing import Tuple, Union, Optional
 import os
 from webbrowser import get
@@ -9,6 +10,8 @@ import numpy as np
 import time
 import json
 from easytorch.utils.dist import master_only
+
+import matplotlib.pyplot as plt
 
 from .base_runner import BaseRunner
 from ..data import SCALER_REGISTRY
@@ -283,7 +286,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
     @torch.no_grad()
     @master_only
-    def test(self):
+    def test(self, plot=False):
         """Evaluate the model.
 
         Args:
@@ -329,6 +332,9 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             metric_item = self.metric_forward(metric_func, [prediction, real_value])
             self.update_epoch_meter("test_"+metric_name, metric_item.item())
             metric_results[metric_name] = metric_item.item()
+        if plot:
+            self.plot_data(prediction, real_value)
+
 
     @master_only
     def on_validating_end(self, train_epoch: Optional[int]):

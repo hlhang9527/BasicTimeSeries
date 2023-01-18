@@ -75,7 +75,7 @@ class TSFormer(nn.Module):
         if self.decoding_knn > 0:
             self.neighbor_token = nn.Parameter(torch.zeros(1, 1, self.decoding_knn, embed_dim))
             trunc_normal_(self.neighbor_token)
-        self.neighbor_token = nn.Parameter(torch.zeros(1, 1, ))
+        self.neighbor_token = nn.Parameter(torch.zeros(1, 1, )) 
         # # decoder
         self.decoder = TransformerLayers(embed_dim, decoder_depth, mlp_ratio, num_heads, dropout)
 
@@ -156,15 +156,15 @@ class TSFormer(nn.Module):
             batch_sim.masked_fill_(mask, 0)
             topk, topk_indices = torch.topk(batch_sim, self.decoding_knn_node, dim=-1)
             topk_onehot = one_hot(topk_indices, num_nodes) # B, N, K, N
-            knn_hidden_states_full_sim = torch.bmm(topk_onehot.view(batch_size, -1, num_nodes).float(), hidden_states_full_sim) # B, N, K, P * (1-r) * d
+            knn_hidden_states_full_sim = torch.bmm(topk_onehot.view(batch_size, -1, num_nodes).float(), hidden_states_full_sim) # B, N, K, P * (1-r) * d selected the topk node
             knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size, num_nodes, self.decoding_knn_node, -1, embedding_dim) # B, N, K, P * (1-r), d
             knn_hidden_states_full_sim = knn_hidden_states_full_sim.view(batch_size * num_nodes, self.decoding_knn_node * unmask_len, embedding_dim) # B*N, K*l, d
-            sub_batch_sim = batch_cosine_similarity(hidden_states_unmasked[:, :, -1, :].detach().contiguous().view(batch_size*num_nodes, 1, embedding_dim),
+            sub_batch_sim = batch_cosine_similarity(hidden_states_unmasked[:, :, -1, :].detach().contiguous().view(batch_size*num_nodes, 1, embedding_dim), #N, B, d
                                                     knn_hidden_states_full_sim) # B, N, 1, K * P
             sub_topk, sub_topk_indices = torch.topk(sub_batch_sim, self.decoding_knn, dim=-1) # B, N, 1, K
             sub_topk_onehot = one_hot(sub_topk_indices, unmask_len * self.decoding_knn_node) # B, N, 1, K, K*l
             sub_knn_hidden_states = torch.bmm(sub_topk_onehot.view(batch_size * num_nodes, self.decoding_knn, self.decoding_knn_node * unmask_len).float(),
-                                              knn_hidden_states_full_sim) # B*N, K, d
+                                              knn_hidden_states_full_sim) # B*N, K, d select the topk patches
             sub_knn_hidden_states = sub_knn_hidden_states.view(batch_size, num_nodes, self.decoding_knn, embedding_dim).to(hidden_states_unmasked.device)
 
 
@@ -185,7 +185,7 @@ class TSFormer(nn.Module):
 
         batch_size, num_nodes, full_len, embedding_dim = hidden_states_full.size()
         if self.decoding_knn > 0:
-            sub_knn_hidden_states = self.enc_2_dec_emb(sub_knn_hidden_states)
+            sub_knn_hidden_states = self.enc_2_dec_emb(sub_knn_hidden_states) #has grad
             sub_knn_hidden_states = self.neighbor_token.expand(batch_size, num_nodes, self.decoding_knn, embedding_dim) + sub_knn_hidden_states
             hidden_states_full = torch.cat([hidden_states_full, sub_knn_hidden_states], dim=-2)
         # decoding

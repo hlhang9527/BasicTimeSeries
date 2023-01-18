@@ -54,7 +54,7 @@ class SimpleTimeSeriesForecastingRunner(BaseTimeSeriesForecastingRunner):
         """
 
         # preprocess
-        future_data, history_data, idx = data
+        future_data, history_data, idx, _ = data
         history_data = self.to_running_device(history_data)      # B, L, N, C
         future_data = self.to_running_device(future_data)       # B, L, N, C
         batch_size, length, num_nodes, _ = future_data.shape

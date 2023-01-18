@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 from easytorch import Runner
 from easytorch.utils import master_only
 from easytorch.core.data_loader import build_data_loader
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 class BaseRunner(Runner):
@@ -208,3 +210,39 @@ class BaseRunner(Runner):
         """
 
         raise NotImplementedError()
+
+    @master_only
+    def visulazation(self, cfg: dict = None, train_epoch: int = None):
+        """load trained model and draw prediction vc actual values.
+        
+            Args:
+                cfg (dict, optional): cofig
+                train_epoch (int, optional): current epoch if in training process.
+        """
+
+        #init test if not in training process
+        if train_epoch is None:
+            self.init_test(cfg)
+        
+        self.on_test_start()
+
+        test_start_time = time.time()
+        self.model.eval()
+
+        #test
+        self.test(plot=True)
+
+        self.on_test_end()
+    
+    def plot_data(self, pre, real, selected_node_id=0, line_width: float = 1.5, font_size: int = 16, history_color="blue", real_color="red", figure_size: tuple = (10, 5)):
+        num_samples = pre.shape[1]
+        plt.rcParams['figure.figsize'] = figure_size
+        plt.plot(real[:,0, selected_node_id, 0],linewidth=line_width, color=real_color, label="real data")
+        plt.plot(pre[:,0, selected_node_id, 0],linewidth=line_width, color=history_color, label="Prediction")
+        plt.grid()
+        plt.legend(fontsize=font_size)
+        plt.savefig('test.png', dpi=500)
+        plt.show()
+        plt.clf()
+        
+        

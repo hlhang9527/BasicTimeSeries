@@ -64,7 +64,7 @@ class STEP(nn.Module):
         if self.tsformer.mode == "3d-finetune":
             hidden_states, hidden_states_decoding  = self.tsformer(long_term_history[..., [0]])
         else:
-            hidden_states = self.tsformer(long_term_history[..., [0]])
+            hidden_states, _ = self.tsformer(long_term_history[..., [0]])
         bernoulli_unnorm, adj_knn, sampled_adj = self.dynamic_graph_learning(long_term_history, hidden_states.reshape(batch_size, num_nodes, -1))
 
         # enhancing downstream STGNNs

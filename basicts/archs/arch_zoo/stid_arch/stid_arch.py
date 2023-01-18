@@ -27,6 +27,8 @@ class STID(nn.Module):
         self.if_time_in_day = model_args["if_T_i_D"]
         self.if_day_in_week = model_args["if_D_i_W"]
         self.if_spatial = model_args["if_node"]
+        self.step_per_day = model_args["step_per_day"]
+        self.step_per_week = model_args["step_per_week"]
 
         # spatial embeddings
         if self.if_spatial:
@@ -36,11 +38,11 @@ class STID(nn.Module):
         # temporal embeddings
         if self.if_time_in_day:
             self.time_in_day_emb = nn.Parameter(
-                torch.empty(288, self.temp_dim_tid))
+                torch.empty(self.step_per_day, self.temp_dim_tid))
             nn.init.xavier_uniform_(self.time_in_day_emb)
         if self.if_day_in_week:
             self.day_in_week_emb = nn.Parameter(
-                torch.empty(7, self.temp_dim_diw))
+                torch.empty(self.step_per_week, self.temp_dim_diw))
             nn.init.xavier_uniform_(self.day_in_week_emb)
 
         # embedding layer
@@ -74,7 +76,7 @@ class STID(nn.Module):
         if self.if_time_in_day:
             t_i_d_data = history_data[..., 1]
             time_in_day_emb = self.time_in_day_emb[(
-                t_i_d_data[:, -1, :] * 288).type(torch.LongTensor)]
+                t_i_d_data[:, -1, :]).type(torch.LongTensor)]
         else:
             time_in_day_emb = None
         if self.if_day_in_week:
@@ -112,4 +114,4 @@ class STID(nn.Module):
         # regression
         prediction = self.regression_layer(hidden)
 
-        return prediction
+        return prediction, None
